@@ -6,5 +6,5 @@ body {
 }
 
 body {
-  overflow: hidden; /* Sem scroll global (regra) */
+  overflow: hidden;
 }

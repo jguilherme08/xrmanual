@@ -4,7 +4,7 @@ import XRayApp from "@/components/XRayApp";
 
 export default function Page() {
   return (
-    <main className="h-screen w-screen overflow-hidden">
+    <main className="min-h-dvh w-screen overflow-hidden">
       <XRayApp />
     </main>
   );
