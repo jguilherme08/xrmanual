@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PRESETS, type FabricPresetKey } from "@/lib/presets";
 import { applyXRayEffect } from "@/lib/xray";
 
@@ -56,14 +56,12 @@ export default function XRayApp() {
   const [presetKey, setPresetKey] = useState<FabricPresetKey>("cortina");
   const preset = PRESETS[presetKey];
 
-  // Defaults mais perceptíveis
   const [thickness, setThickness] = useState<number>(0.55);
   const [intensity, setIntensity] = useState<number>(1.0);
   const [enableNoise, setEnableNoise] = useState<boolean>(true);
 
   const [img, setImg] = useState<LoadedImage | null>(null);
   const [aspect, setAspect] = useState<{ aw: number; ah: number }>({ aw: 4, ah: 3 });
-  const [processedUrl, setProcessedUrl] = useState<string | null>(null);
 
   // Mobile: Preview OU Resultado (não coexistem visualmente)
   const [mobileTab, setMobileTab] = useState<"preview" | "resultado">("preview");
@@ -114,41 +112,47 @@ export default function XRayApp() {
     setMobileTab("preview");
   }
 
-
-  const renderEffect = useCallback(() => {
-    if (!img || !canvasRef.current) return;
-
-    console.log("renderEffect", preset, thickness, intensity, enableNoise);
+  const render = () => {
+    if (!img) return;
 
     const canvas = canvasRef.current;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const work = workCanvasRef.current;
+    if (!canvas || !work) return;
+
     const maxRenderSize = 1700;
     const scale = Math.min(maxRenderSize / Math.max(img.w, img.h), 1);
     const rw = Math.max(1, Math.floor(img.w * scale));
     const rh = Math.max(1, Math.floor(img.h * scale));
 
-    // 1) Defina tamanho do canvas ANTES de desenhar (senão ele limpa)
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+    work.width = rw;
+    work.height = rh;
+
     canvas.width = Math.floor(rw * dpr);
     canvas.height = Math.floor(rh * dpr);
 
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return;
+    const wctx = work.getContext("2d", { willReadFrequently: true });
+    const vctx = canvas.getContext("2d");
+    if (!wctx || !vctx) return;
 
-    // 2) Desenha original
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, rw, rh);
-    if (img.bitmap) ctx.drawImage(img.bitmap, 0, 0, rw, rh);
-    else if (img.imgEl) ctx.drawImage(img.imgEl, 0, 0, rw, rh);
+    wctx.clearRect(0, 0, rw, rh);
+
+    // Base imutável
+    if (img.bitmap) wctx.drawImage(img.bitmap, 0, 0, rw, rh);
+    else if (img.imgEl) wctx.drawImage(img.imgEl, 0, 0, rw, rh);
     else return;
 
-    // 3) Processa
-    const imgData = ctx.getImageData(0, 0, rw, rh);
+    const base = wctx.getImageData(0, 0, rw, rh);
+
+    // Slider intuitivo: mais para a direita => mais efeito
     const thicknessEff = clamp(
       preset.thicknessMin + preset.thicknessMax - thickness,
       preset.thicknessMin,
       preset.thicknessMax
     );
-    const outData = applyXRayEffect(imgData, {
+
+    const processed = applyXRayEffect(base, {
       preset,
       thickness: thicknessEff,
       intensity,
@@ -156,41 +160,35 @@ export default function XRayApp() {
       maxRenderSize,
     });
 
-    // 4) Commita resultado no canvas
-    ctx.putImageData(outData, 0, 0);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    wctx.putImageData(processed, 0, 0);
 
-    // Debug: leia 1 pixel e logue
-    const p = ctx.getImageData(0, 0, 1, 1).data;
-    console.log("pixel00", p);
-
-    // 5) (Opcional) Gera processedUrl para <img> se necessário
-    // Descomente se quiser usar <img src={processedUrl} /> para o resultado
-    // canvas.toBlob((blob) => {
-    //   if (!blob) return;
-    //   const url = URL.createObjectURL(blob);
-    //   setProcessedUrl((prev) => {
-    //     if (prev) URL.revokeObjectURL(prev);
-    //     return url;
-    //   });
-    //   console.log("processedUrl", url);
-    // }, "image/png");
-  }, [img, preset, thickness, intensity, enableNoise]);
-
-  // Renderiza quando Resultado estiver visível (mobile) + sempre no desktop
-  useEffect(() => {
-    renderEffect();
-  }, [renderEffect]);
+    vctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    vctx.clearRect(0, 0, rw, rh);
+    vctx.drawImage(work, 0, 0);
+  };
 
   useEffect(() => {
-    const onResize = () => renderEffect();
+    if (!img) return;
+
+    const isDesktop = window.matchMedia("(min-width: 768px)").matches;
+    if (!isDesktop && mobileTab !== "resultado") return;
+
+    const id = requestAnimationFrame(() => render());
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [img, presetKey, thickness, intensity, enableNoise, mobileTab]);
+
+  useEffect(() => {
+    if (!img) return;
+    const onResize = () => render();
     window.addEventListener("resize", onResize, { passive: true });
     window.addEventListener("orientationchange", onResize, { passive: true });
     return () => {
       window.removeEventListener("resize", onResize);
       window.removeEventListener("orientationchange", onResize);
     };
-  }, [renderEffect]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [img]);
 
   return (
     <div className="min-h-dvh w-screen flex flex-col overflow-hidden">
@@ -202,6 +200,7 @@ export default function XRayApp() {
               Client-only • pipeline imutável • canvas apenas como saída
             </div>
           </div>
+
           <div className="flex items-center gap-2">
             <label className="cursor-pointer rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs hover:bg-zinc-800">
               <input
@@ -216,6 +215,7 @@ export default function XRayApp() {
               />
               Upload
             </label>
+
             <button
               type="button"
               onClick={clearImage}
@@ -228,9 +228,8 @@ export default function XRayApp() {
         </div>
       </header>
 
-      {/* Sem scroll global; scroll interno */}
+      {/* scroll interno (mobile) */}
       <section className="flex-1 overflow-y-auto p-4">
-        {/* Tabs mobile */}
         <div className="mb-3 flex gap-2 md:hidden">
           <button
             type="button"
@@ -253,7 +252,6 @@ export default function XRayApp() {
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {/* Preview */}
           <div className={`${mobileTab !== "preview" ? "hidden md:flex" : "flex"} flex-col gap-2`}>
             <div className="text-xs text-zinc-400">Upload / Preview</div>
             <div
@@ -277,14 +275,19 @@ export default function XRayApp() {
             </div>
           </div>
 
-          {/* Resultado */}
           <div className={`${mobileTab !== "resultado" ? "hidden md:flex" : "flex"} flex-col gap-2`}>
             <div className="text-xs text-zinc-400">Resultado (X-ray)</div>
             <div
               className="relative w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900"
               style={viewAspectStyle}
             >
-              <canvas className="absolute inset-0 h-full w-full" ref={canvasRef} />
+              {/* iOS: força esticar canvas */}
+              <canvas
+                ref={canvasRef}
+                className="absolute inset-0 block"
+                style={{ width: "100%", height: "100%" }}
+              />
+
               {!img && (
                 <div className="absolute inset-0 grid place-items-center p-6 text-center">
                   <div className="max-w-xs text-sm text-zinc-400">
@@ -296,26 +299,23 @@ export default function XRayApp() {
           </div>
         </div>
 
-        {/* Controles fora do container do canvas */}
         <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950 p-4">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <div className="md:col-span-2">
               <label className="block text-xs text-zinc-400">Preset de tecido</label>
+
               <select
                 className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm"
                 value={presetKey}
                 onChange={(e) => setPresetKey(e.target.value as FabricPresetKey)}
               >
                 {Object.values(PRESETS).map((p) => (
-                  <canvas
-                    ref={canvasRef}
-                    className="absolute inset-0 block"
-                    style={{ width: "100%", height: "100%" }}
-                  />
+                  <option key={p.key} value={p.key}>
                     {p.label}
                   </option>
                 ))}
               </select>
+
               <div className="mt-2 text-[11px] text-zinc-500">
                 Presets limitam intensidade/densidade para evitar imagem estourada.
               </div>
