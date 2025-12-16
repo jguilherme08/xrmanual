@@ -5,7 +5,6 @@ import { PRESETS, type FabricPresetKey } from "@/lib/presets";
 import { applyXRayEffect } from "@/lib/xray";
 
 type LoadedImage = {
-  // Preferimos ImageBitmap; se não der (iOS), usamos HTMLImageElement
   bitmap?: ImageBitmap;
   imgEl?: HTMLImageElement;
   w: number;
@@ -39,7 +38,6 @@ function snapAspectRatio(w: number, h: number) {
   return { aw: best[0], ah: best[1] };
 }
 
-// Fallback robusto para mobile (principalmente iOS)
 async function loadImageFallback(file: File): Promise<{ imgEl: HTMLImageElement; w: number; h: number }> {
   const url = URL.createObjectURL(file);
   const img = new Image();
@@ -58,7 +56,7 @@ export default function XRayApp() {
   const [presetKey, setPresetKey] = useState<FabricPresetKey>("cortina");
   const preset = PRESETS[presetKey];
 
-  // Defaults mais perceptíveis no mobile (sem estourar por causa dos clamps do preset)
+  // Defaults mais perceptíveis (sem estourar, pois preset clampa)
   const [thickness, setThickness] = useState<number>(0.55);
   const [intensity, setIntensity] = useState<number>(1.0);
   const [enableNoise, setEnableNoise] = useState<boolean>(true);
@@ -66,7 +64,7 @@ export default function XRayApp() {
   const [img, setImg] = useState<LoadedImage | null>(null);
   const [aspect, setAspect] = useState<{ aw: number; ah: number }>({ aw: 4, ah: 3 });
 
-  // Mobile: mostrar um bloco por vez (evita “espremido” e segue a regra de não coexistir)
+  // Mobile: mostrar um bloco por vez (não coexistem visualmente)
   const [mobileTab, setMobileTab] = useState<"preview" | "resultado">("preview");
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -88,24 +86,20 @@ export default function XRayApp() {
   );
 
   async function onPickFile(file: File) {
-    // Não inserir <img hidden> no DOM; só carregamento em memória
     const objectUrl = URL.createObjectURL(file);
 
-    // Tenta ImageBitmap; se falhar, usa <img> fallback
     try {
       const bitmap = await createImageBitmap(file);
       const snapped = snapAspectRatio(bitmap.width, bitmap.height);
       setAspect(snapped);
       setImg({ bitmap, w: bitmap.width, h: bitmap.height, objectUrl });
     } catch {
-      // Fallback para mobile
       const { imgEl, w, h } = await loadImageFallback(file);
       const snapped = snapAspectRatio(w, h);
       setAspect(snapped);
       setImg({ imgEl, w, h, objectUrl });
     }
 
-    // No mobile, após upload, já mostra o resultado
     setMobileTab("resultado");
   }
 
@@ -119,7 +113,6 @@ export default function XRayApp() {
     setMobileTab("preview");
   }
 
-  // Função de render (para reutilizar em resize/orientation)
   const render = () => {
     if (!img) return;
 
@@ -127,7 +120,6 @@ export default function XRayApp() {
     const work = workCanvasRef.current;
     if (!canvas || !work) return;
 
-    // Limite de render seguro (client-only, performance estável)
     const maxRenderSize = 1700;
     const scale = Math.min(maxRenderSize / Math.max(img.w, img.h), 1);
     const rw = Math.max(1, Math.floor(img.w * scale));
@@ -145,19 +137,16 @@ export default function XRayApp() {
     const vctx = canvas.getContext("2d");
     if (!wctx || !vctx) return;
 
+    // 1) limpa
     wctx.clearRect(0, 0, rw, rh);
 
-    // Base imutável (bitmap ou img)
-    if (img.bitmap) {
-      wctx.drawImage(img.bitmap, 0, 0, rw, rh);
-    } else if (img.imgEl) {
-      wctx.drawImage(img.imgEl, 0, 0, rw, rh);
-    } else {
-      return;
-    }
+    // 2) redesenha base imutável
+    if (img.bitmap) wctx.drawImage(img.bitmap, 0, 0, rw, rh);
+    else if (img.imgEl) wctx.drawImage(img.imgEl, 0, 0, rw, rh);
+    else return;
 
+    // 3) aplica efeito sempre a partir da base
     const base = wctx.getImageData(0, 0, rw, rh);
-
     const processed = applyXRayEffect(base, {
       preset,
       thickness,
@@ -165,39 +154,35 @@ export default function XRayApp() {
       enableNoise,
       maxRenderSize,
     });
-
     wctx.putImageData(processed, 0, 0);
 
+    // 4) exibe (canvas é saída)
     vctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     vctx.clearRect(0, 0, rw, rh);
     vctx.drawImage(work, 0, 0);
   };
 
-  // Reaplica sempre da base original (imutável)
   useEffect(() => {
     if (!img) return;
-    // aguarda layout estabilizar (mobile)
     const id = requestAnimationFrame(() => render());
     return () => cancelAnimationFrame(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [img, presetKey, thickness, intensity, enableNoise]);
 
-  // Re-render em resize/orientation (mobile)
   useEffect(() => {
     if (!img) return;
     const onResize = () => render();
     window.addEventListener("resize", onResize, { passive: true });
-    window.addEventListener("orientationchange", onResize, { passive: true } as any);
+    window.addEventListener("orientationchange", onResize, { passive: true });
     return () => {
       window.removeEventListener("resize", onResize);
-      window.removeEventListener("orientationchange", onResize as any);
+      window.removeEventListener("orientationchange", onResize);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [img]);
 
   return (
     <div className="min-h-dvh w-screen flex flex-col overflow-hidden">
-      {/* Header fixo */}
       <header className="shrink-0 border-b border-zinc-800 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
@@ -232,17 +217,15 @@ export default function XRayApp() {
         </div>
       </header>
 
-      {/* Conteúdo COM scroll interno (sem scroll global) */}
+      {/* Sem scroll global; scroll interno */}
       <section className="flex-1 overflow-y-auto p-4">
-        {/* Tabs só no mobile */}
+        {/* Tabs mobile */}
         <div className="mb-3 flex gap-2 md:hidden">
           <button
             type="button"
             onClick={() => setMobileTab("preview")}
             className={`flex-1 rounded-md border px-3 py-2 text-xs ${
-              mobileTab === "preview"
-                ? "border-zinc-500 bg-zinc-800"
-                : "border-zinc-800 bg-zinc-900"
+              mobileTab === "preview" ? "border-zinc-500 bg-zinc-800" : "border-zinc-800 bg-zinc-900"
             }`}
           >
             Preview
@@ -251,48 +234,41 @@ export default function XRayApp() {
             type="button"
             onClick={() => setMobileTab("resultado")}
             className={`flex-1 rounded-md border px-3 py-2 text-xs ${
-              mobileTab === "resultado"
-                ? "border-zinc-500 bg-zinc-800"
-                : "border-zinc-800 bg-zinc-900"
+              mobileTab === "resultado" ? "border-zinc-500 bg-zinc-800" : "border-zinc-800 bg-zinc-900"
             }`}
           >
             Resultado
           </button>
         </div>
 
-        {/* Desktop: lado a lado. Mobile: um por vez */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {/* Preview */}
-          {(mobileTab === "preview" || !("ontouchstart" in window)) && (
-            <div className={`flex flex-col gap-2 ${mobileTab !== "preview" ? "hidden md:flex" : ""}`}>
-              <div className="text-xs text-zinc-400">Upload / Preview</div>
-
-              <div
-                className="relative w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900"
-                style={viewAspectStyle}
-              >
-                {!img ? (
-                  <div className="absolute inset-0 grid place-items-center p-6 text-center">
-                    <div className="max-w-xs text-sm text-zinc-400">
-                      Envie uma imagem. Este bloco tem tamanho previsível antes do render.
-                    </div>
+          <div className={`${mobileTab !== "preview" ? "hidden md:flex" : "flex"} flex-col gap-2`}>
+            <div className="text-xs text-zinc-400">Upload / Preview</div>
+            <div
+              className="relative w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900"
+              style={viewAspectStyle}
+            >
+              {!img ? (
+                <div className="absolute inset-0 grid place-items-center p-6 text-center">
+                  <div className="max-w-xs text-sm text-zinc-400">
+                    Envie uma imagem. Este bloco tem tamanho previsível antes do render.
                   </div>
-                ) : (
-                  <img
-                    src={img.objectUrl}
-                    alt="Preview"
-                    className="absolute inset-0 h-full w-full object-contain"
-                    draggable={false}
-                  />
-                )}
-              </div>
+                </div>
+              ) : (
+                <img
+                  src={img.objectUrl}
+                  alt="Preview"
+                  className="absolute inset-0 h-full w-full object-contain"
+                  draggable={false}
+                />
+              )}
             </div>
-          )}
+          </div>
 
           {/* Resultado */}
-          <div className={`flex flex-col gap-2 ${mobileTab !== "resultado" ? "hidden md:flex" : ""}`}>
+          <div className={`${mobileTab !== "resultado" ? "hidden md:flex" : "flex"} flex-col gap-2`}>
             <div className="text-xs text-zinc-400">Resultado (X-ray)</div>
-
             <div
               className="relative w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900"
               style={viewAspectStyle}
@@ -309,7 +285,7 @@ export default function XRayApp() {
           </div>
         </div>
 
-        {/* Controles (fora do container do canvas) */}
+        {/* Controles fora do container do canvas */}
         <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950 p-4">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <div className="md:col-span-2">
@@ -326,14 +302,12 @@ export default function XRayApp() {
                 ))}
               </select>
               <div className="mt-2 text-[11px] text-zinc-500">
-                Presets têm limites próprios para evitar imagem estourada e manter plausibilidade.
+                Presets limitam intensidade/densidade para evitar imagem estourada.
               </div>
             </div>
 
             <div>
-              <label className="block text-xs text-zinc-400">
-                Espessura: {thickness.toFixed(2)}
-              </label>
+              <label className="block text-xs text-zinc-400">Espessura: {thickness.toFixed(2)}</label>
               <input
                 className="mt-2 w-full"
                 type="range"
@@ -347,11 +321,30 @@ export default function XRayApp() {
             </div>
 
             <div>
-              <label className="block text-xs text-zinc-400">
-                Intensidade: {intensity.toFixed(2)}
-              </label>
+              <label className="block text-xs text-zinc-400">Intensidade: {intensity.toFixed(2)}</label>
               <input
                 className="mt-2 w-full"
                 type="range"
                 min={0}
-
+                max={1}
+                step={0.01}
+                value={intensity}
+                onChange={(e) => setIntensity(parseFloat(e.target.value))}
+                disabled={!img}
+              />
+              <label className="mt-3 flex select-none items-center gap-2 text-xs text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={enableNoise}
+                  onChange={(e) => setEnableNoise(e.target.checked)}
+                  disabled={!img}
+                />
+                Ruído leve (sensor)
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
