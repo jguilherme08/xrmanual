@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { PRESETS, type FabricPresetKey } from "@/lib/presets";
 import { applyXRayEffect } from "@/lib/xray";
 
@@ -63,6 +63,7 @@ export default function XRayApp() {
 
   const [img, setImg] = useState<LoadedImage | null>(null);
   const [aspect, setAspect] = useState<{ aw: number; ah: number }>({ aw: 4, ah: 3 });
+  const [processedUrl, setProcessedUrl] = useState<string | null>(null);
 
   // Mobile: Preview OU Resultado (não coexistem visualmente)
   const [mobileTab, setMobileTab] = useState<"preview" | "resultado">("preview");
@@ -113,48 +114,41 @@ export default function XRayApp() {
     setMobileTab("preview");
   }
 
-  const render = () => {
-    if (!img) return;
+
+  const renderEffect = useCallback(() => {
+    if (!img || !canvasRef.current) return;
+
+    console.log("renderEffect", preset, thickness, intensity, enableNoise);
 
     const canvas = canvasRef.current;
-    const work = workCanvasRef.current;
-    if (!canvas || !work) return;
-
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const maxRenderSize = 1700;
     const scale = Math.min(maxRenderSize / Math.max(img.w, img.h), 1);
     const rw = Math.max(1, Math.floor(img.w * scale));
     const rh = Math.max(1, Math.floor(img.h * scale));
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-
-    work.width = rw;
-    work.height = rh;
-
+    // 1) Defina tamanho do canvas ANTES de desenhar (senão ele limpa)
     canvas.width = Math.floor(rw * dpr);
     canvas.height = Math.floor(rh * dpr);
 
-    const wctx = work.getContext("2d", { willReadFrequently: true });
-    const vctx = canvas.getContext("2d");
-    if (!wctx || !vctx) return;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
 
-    // 1) limpa
-    wctx.clearRect(0, 0, rw, rh);
-
-    // 2) redesenha base imutável
-    if (img.bitmap) wctx.drawImage(img.bitmap, 0, 0, rw, rh);
-    else if (img.imgEl) wctx.drawImage(img.imgEl, 0, 0, rw, rh);
+    // 2) Desenha original
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, rw, rh);
+    if (img.bitmap) ctx.drawImage(img.bitmap, 0, 0, rw, rh);
+    else if (img.imgEl) ctx.drawImage(img.imgEl, 0, 0, rw, rh);
     else return;
 
-    // 3) aplica efeito sempre a partir da base (e torna o slider intuitivo)
-    const base = wctx.getImageData(0, 0, rw, rh);
-
+    // 3) Processa
+    const imgData = ctx.getImageData(0, 0, rw, rh);
     const thicknessEff = clamp(
       preset.thicknessMin + preset.thicknessMax - thickness,
       preset.thicknessMin,
       preset.thicknessMax
     );
-
-    const processed = applyXRayEffect(base, {
+    const outData = applyXRayEffect(imgData, {
       preset,
       thickness: thicknessEff,
       intensity,
@@ -162,37 +156,41 @@ export default function XRayApp() {
       maxRenderSize,
     });
 
-    wctx.putImageData(processed, 0, 0);
+    // 4) Commita resultado no canvas
+    ctx.putImageData(outData, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // 4) exibe (canvas é saída)
-    vctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    vctx.clearRect(0, 0, rw, rh);
-    vctx.drawImage(work, 0, 0);
-  };
+    // Debug: leia 1 pixel e logue
+    const p = ctx.getImageData(0, 0, 1, 1).data;
+    console.log("pixel00", p);
+
+    // 5) (Opcional) Gera processedUrl para <img> se necessário
+    // Descomente se quiser usar <img src={processedUrl} /> para o resultado
+    // canvas.toBlob((blob) => {
+    //   if (!blob) return;
+    //   const url = URL.createObjectURL(blob);
+    //   setProcessedUrl((prev) => {
+    //     if (prev) URL.revokeObjectURL(prev);
+    //     return url;
+    //   });
+    //   console.log("processedUrl", url);
+    // }, "image/png");
+  }, [img, preset, thickness, intensity, enableNoise]);
 
   // Renderiza quando Resultado estiver visível (mobile) + sempre no desktop
   useEffect(() => {
-    if (!img) return;
-
-    const isDesktop = window.matchMedia?.("(min-width: 768px)")?.matches ?? true;
-    if (!isDesktop && mobileTab !== "resultado") return;
-
-    const id = requestAnimationFrame(() => render());
-    return () => cancelAnimationFrame(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [img, presetKey, thickness, intensity, enableNoise, mobileTab]);
+    renderEffect();
+  }, [renderEffect]);
 
   useEffect(() => {
-    if (!img) return;
-    const onResize = () => render();
+    const onResize = () => renderEffect();
     window.addEventListener("resize", onResize, { passive: true });
     window.addEventListener("orientationchange", onResize, { passive: true });
     return () => {
       window.removeEventListener("resize", onResize);
       window.removeEventListener("orientationchange", onResize);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [img]);
+  }, [renderEffect]);
 
   return (
     <div className="min-h-dvh w-screen flex flex-col overflow-hidden">
