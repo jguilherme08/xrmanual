@@ -56,7 +56,7 @@ export default function XRayApp() {
   const [presetKey, setPresetKey] = useState<FabricPresetKey>("cortina");
   const preset = PRESETS[presetKey];
 
-  // Defaults mais perceptíveis (sem estourar, pois preset clampa)
+  // Defaults mais perceptíveis
   const [thickness, setThickness] = useState<number>(0.55);
   const [intensity, setIntensity] = useState<number>(1.0);
   const [enableNoise, setEnableNoise] = useState<boolean>(true);
@@ -64,7 +64,7 @@ export default function XRayApp() {
   const [img, setImg] = useState<LoadedImage | null>(null);
   const [aspect, setAspect] = useState<{ aw: number; ah: number }>({ aw: 4, ah: 3 });
 
-  // Mobile: mostrar um bloco por vez (não coexistem visualmente)
+  // Mobile: Preview OU Resultado (não coexistem visualmente)
   const [mobileTab, setMobileTab] = useState<"preview" | "resultado">("preview");
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -145,15 +145,23 @@ export default function XRayApp() {
     else if (img.imgEl) wctx.drawImage(img.imgEl, 0, 0, rw, rh);
     else return;
 
-    // 3) aplica efeito sempre a partir da base
+    // 3) aplica efeito sempre a partir da base (e torna o slider intuitivo)
     const base = wctx.getImageData(0, 0, rw, rh);
+
+    const thicknessEff = clamp(
+      preset.thicknessMin + preset.thicknessMax - thickness,
+      preset.thicknessMin,
+      preset.thicknessMax
+    );
+
     const processed = applyXRayEffect(base, {
       preset,
-      thickness,
+      thickness: thicknessEff,
       intensity,
       enableNoise,
       maxRenderSize,
     });
+
     wctx.putImageData(processed, 0, 0);
 
     // 4) exibe (canvas é saída)
@@ -162,9 +170,12 @@ export default function XRayApp() {
     vctx.drawImage(work, 0, 0);
   };
 
+  // Renderiza quando Resultado estiver visível (mobile) + sempre no desktop
   useEffect(() => {
     if (!img) return;
-    if (mobileTab !== "resultado") return;
+
+    const isDesktop = window.matchMedia?.("(min-width: 768px)")?.matches ?? true;
+    if (!isDesktop && mobileTab !== "resultado") return;
 
     const id = requestAnimationFrame(() => render());
     return () => cancelAnimationFrame(id);

@@ -131,10 +131,12 @@ export function applyXRayEffect(imageData: ImageData, params: XRayParams): Image
     const cdg = clamp(dg, -maxD, maxD);
     const cdb = clamp(db, -maxD, maxD);
 
-    // Aplicação do detalhe sem alterar brilho global
-    let rr = r + cdr;
-    let gg = g + cdg;
-    let bb2 = b + cdb;
+
+    // Aplicação do detalhe usando mistura (mix) para evitar "lavagem"
+    const mix = clamp(reveal * 0.9, 0, 0.35); // limite forte anti-“lavagem”
+    let rr = lerp(r, br, mix) + cdr;
+    let gg = lerp(g, bg, mix) + cdg;
+    let bb2 = lerp(b, bb, mix) + cdb;
 
     // Desaturação moderada para “leitura de volume”
     const lum = 0.2126 * rr + 0.7152 * gg + 0.0722 * bb2;
