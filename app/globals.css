@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 html,
 body {
@@ -10,7 +8,3 @@ body {
 body {
   overflow: hidden; /* Sem scroll global (regra) */
 }
-#__next {
-  height: 100%;
-}
-  
