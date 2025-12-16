@@ -1,0 +1,10 @@
+@media (max-width: 768px) {
+  .container {
+    width: 100%;
+    overflow: auto;
+  }
+
+  .preview-container {
+    overflow: auto;
+  }
+}

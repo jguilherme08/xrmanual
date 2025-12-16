@@ -1,10 +1,9 @@
 @import "tailwindcss";
 
+@import "./mobile-fixes.css";
+
 html,
 body {
   height: 100%;
-}
-
-body {
-  overflow: hidden;
+  overflow-y: scroll;
 }
