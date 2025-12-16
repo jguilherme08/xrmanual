@@ -164,10 +164,12 @@ export default function XRayApp() {
 
   useEffect(() => {
     if (!img) return;
+    if (mobileTab !== "resultado") return;
+
     const id = requestAnimationFrame(() => render());
     return () => cancelAnimationFrame(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [img, presetKey, thickness, intensity, enableNoise]);
+  }, [img, presetKey, thickness, intensity, enableNoise, mobileTab]);
 
   useEffect(() => {
     if (!img) return;
