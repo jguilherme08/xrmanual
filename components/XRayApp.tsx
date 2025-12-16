@@ -52,27 +52,60 @@ async function loadImageFallback(file: File): Promise<{ imgEl: HTMLImageElement;
   return { imgEl: img, w: img.naturalWidth || img.width, h: img.naturalHeight || img.height };
 }
 
+type BrushMode = "dodge" | "burn";
+
 export default function XRayApp() {
   const [presetKey, setPresetKey] = useState<FabricPresetKey>("cortina");
   const preset = PRESETS[presetKey];
 
+  // X-ray
   const [thickness, setThickness] = useState<number>(0.55);
   const [intensity, setIntensity] = useState<number>(1.0);
   const [enableNoise, setEnableNoise] = useState<boolean>(true);
 
+  // Tonalidade (controles “visíveis”)
+  const [shadows, setShadows] = useState(0.55);
+  const [blacks, setBlacks] = useState(0.35);
+  const [highlights, setHighlights] = useState(0.25);
+  const [contrast, setContrast] = useState(0.25);
+
+  // Textura / microcontraste
+  const [clarity, setClarity] = useState(0.35);
+  const [dehaze, setDehaze] = useState(0.15);
+
+  // Ruído e nitidez
+  const [denoiseColor, setDenoiseColor] = useState(0.25);
+  const [denoiseLuma, setDenoiseLuma] = useState(0.20);
+  const [sharpen, setSharpen] = useState(0.20);
+  const [sharpenMasking, setSharpenMasking] = useState(0.55);
+
   const [img, setImg] = useState<LoadedImage | null>(null);
   const [aspect, setAspect] = useState<{ aw: number; ah: number }>({ aw: 4, ah: 3 });
 
-  // Mobile: Preview OU Resultado (não coexistem visualmente)
-  const [mobileTab, setMobileTab] = useState<"preview" | "resultado">("preview");
+  // Aba única (sempre) para manter “preview e resultado não coexistem”
+  const [tab, setTab] = useState<"preview" | "resultado">("preview");
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const workCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // máscaras para Dodge/Burn (mesma resolução do render)
+  const dodgeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const burnCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // últimos tamanhos de render (para mapear pincel)
+  const lastRenderRef = useRef<{ rw: number; rh: number } | null>(null);
+
+  // Brush
+  const [brushEnabled, setBrushEnabled] = useState(false);
+  const [brushMode, setBrushMode] = useState<BrushMode>("dodge");
+  const [brushSize, setBrushSize] = useState(46); // px em coords do render
+  const [brushOpacity, setBrushOpacity] = useState(0.12); // 5–15% típico
+  const paintingRef = useRef(false);
+
   useEffect(() => {
-    if (!workCanvasRef.current) {
-      workCanvasRef.current = document.createElement("canvas");
-    }
+    if (!workCanvasRef.current) workCanvasRef.current = document.createElement("canvas");
+    if (!dodgeCanvasRef.current) dodgeCanvasRef.current = document.createElement("canvas");
+    if (!burnCanvasRef.current) burnCanvasRef.current = document.createElement("canvas");
   }, []);
 
   useEffect(() => {
@@ -99,7 +132,7 @@ export default function XRayApp() {
       setImg({ imgEl, w, h, objectUrl });
     }
 
-    setMobileTab("resultado");
+    setTab("resultado");
   }
 
   function clearImage() {
@@ -109,7 +142,25 @@ export default function XRayApp() {
       return null;
     });
     setAspect({ aw: 4, ah: 3 });
-    setMobileTab("preview");
+    clearMasks();
+    setTab("preview");
+  }
+
+  function clearMasks() {
+    const d = dodgeCanvasRef.current;
+    const b = burnCanvasRef.current;
+    const lr = lastRenderRef.current;
+    if (!d || !b || !lr) return;
+
+    d.width = lr.rw;
+    d.height = lr.rh;
+    b.width = lr.rw;
+    b.height = lr.rh;
+
+    const dctx = d.getContext("2d");
+    const bctx = b.getContext("2d");
+    dctx?.clearRect(0, 0, lr.rw, lr.rh);
+    bctx?.clearRect(0, 0, lr.rw, lr.rh);
   }
 
   const render = () => {
@@ -117,12 +168,15 @@ export default function XRayApp() {
 
     const canvas = canvasRef.current;
     const work = workCanvasRef.current;
-    if (!canvas || !work) return;
+    const dodgeC = dodgeCanvasRef.current;
+    const burnC = burnCanvasRef.current;
+    if (!canvas || !work || !dodgeC || !burnC) return;
 
     const maxRenderSize = 1700;
     const scale = Math.min(maxRenderSize / Math.max(img.w, img.h), 1);
     const rw = Math.max(1, Math.floor(img.w * scale));
     const rh = Math.max(1, Math.floor(img.h * scale));
+    lastRenderRef.current = { rw, rh };
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
@@ -132,25 +186,48 @@ export default function XRayApp() {
     canvas.width = Math.floor(rw * dpr);
     canvas.height = Math.floor(rh * dpr);
 
+    // garante máscaras na mesma resolução
+    if (dodgeC.width !== rw || dodgeC.height !== rh) {
+      dodgeC.width = rw;
+      dodgeC.height = rh;
+      burnC.width = rw;
+      burnC.height = rh;
+    }
+
     const wctx = work.getContext("2d", { willReadFrequently: true });
     const vctx = canvas.getContext("2d");
     if (!wctx || !vctx) return;
 
     wctx.clearRect(0, 0, rw, rh);
 
-    // Base imutável
     if (img.bitmap) wctx.drawImage(img.bitmap, 0, 0, rw, rh);
     else if (img.imgEl) wctx.drawImage(img.imgEl, 0, 0, rw, rh);
     else return;
 
     const base = wctx.getImageData(0, 0, rw, rh);
 
-    // Slider intuitivo: mais para a direita => mais efeito
+    // slider intuitivo: mais para a direita => mais efeito
     const thicknessEff = clamp(
       preset.thicknessMin + preset.thicknessMax - thickness,
       preset.thicknessMin,
       preset.thicknessMax
     );
+
+    const dctx = dodgeC.getContext("2d");
+    const bctx = burnC.getContext("2d");
+    const dodgeData = dctx?.getImageData(0, 0, rw, rh).data;
+    const burnData = bctx?.getImageData(0, 0, rw, rh).data;
+
+    // converte RGBA->1 canal (alpha do desenho). usamos canal R
+    const dodgeMask = dodgeData ? new Uint8ClampedArray(rw * rh) : undefined;
+    const burnMask = burnData ? new Uint8ClampedArray(rw * rh) : undefined;
+
+    if (dodgeMask && dodgeData) {
+      for (let p = 0, k = 0; p < dodgeData.length; p += 4, k++) dodgeMask[k] = dodgeData[p];
+    }
+    if (burnMask && burnData) {
+      for (let p = 0, k = 0; p < burnData.length; p += 4, k++) burnMask[k] = burnData[p];
+    }
 
     const processed = applyXRayEffect(base, {
       preset,
@@ -158,6 +235,22 @@ export default function XRayApp() {
       intensity,
       enableNoise,
       maxRenderSize,
+
+      shadows,
+      blacks,
+      highlights,
+      contrast,
+
+      clarity,
+      dehaze,
+
+      denoiseColor,
+      denoiseLuma,
+      sharpen,
+      sharpenMasking,
+
+      dodgeMask,
+      burnMask,
     });
 
     wctx.putImageData(processed, 0, 0);
@@ -167,16 +260,31 @@ export default function XRayApp() {
     vctx.drawImage(work, 0, 0);
   };
 
+  // Re-render quando controles mudarem e quando Resultado estiver visível
   useEffect(() => {
     if (!img) return;
-
-    const isDesktop = window.matchMedia("(min-width: 768px)").matches;
-    if (!isDesktop && mobileTab !== "resultado") return;
-
+    if (tab !== "resultado") return;
     const id = requestAnimationFrame(() => render());
     return () => cancelAnimationFrame(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [img, presetKey, thickness, intensity, enableNoise, mobileTab]);
+  }, [
+    img,
+    presetKey,
+    thickness,
+    intensity,
+    enableNoise,
+    shadows,
+    blacks,
+    highlights,
+    contrast,
+    clarity,
+    dehaze,
+    denoiseColor,
+    denoiseLuma,
+    sharpen,
+    sharpenMasking,
+    tab,
+  ]);
 
   useEffect(() => {
     if (!img) return;
@@ -190,15 +298,62 @@ export default function XRayApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [img]);
 
+  // pintura local (Dodge & Burn) – desenha na máscara (canvas offscreen)
+  function paintAt(clientX: number, clientY: number) {
+    const lr = lastRenderRef.current;
+    if (!lr) return;
+    const container = canvasRef.current?.parentElement;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const xNorm = (clientX - rect.left) / rect.width;
+    const yNorm = (clientY - rect.top) / rect.height;
+
+    const x = clamp(Math.round(xNorm * lr.rw), 0, lr.rw - 1);
+    const y = clamp(Math.round(yNorm * lr.rh), 0, lr.rh - 1);
+
+    const target = brushMode === "dodge" ? dodgeCanvasRef.current : burnCanvasRef.current;
+    if (!target) return;
+
+    const ctx = target.getContext("2d");
+    if (!ctx) return;
+
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "white";
+    ctx.globalAlpha = clamp(brushOpacity, 0.02, 0.25);
+
+    ctx.beginPath();
+    ctx.arc(x, y, clamp(brushSize, 8, 140), 0, Math.PI * 2);
+    ctx.fill();
+
+    // renderiza de novo para ver o efeito
+    requestAnimationFrame(() => render());
+  }
+
+  function onPointerDown(e: React.PointerEvent) {
+    if (!brushEnabled) return;
+    paintingRef.current = true;
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    paintAt(e.clientX, e.clientY);
+  }
+
+  function onPointerMove(e: React.PointerEvent) {
+    if (!brushEnabled) return;
+    if (!paintingRef.current) return;
+    paintAt(e.clientX, e.clientY);
+  }
+
+  function onPointerUp() {
+    paintingRef.current = false;
+  }
+
   return (
     <div className="min-h-dvh w-screen flex flex-col overflow-hidden">
       <header className="shrink-0 border-b border-zinc-800 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="text-sm text-zinc-300">X-Ray Realista em Tecidos</div>
-            <div className="text-xs text-zinc-500">
-              Client-only • pipeline imutável • canvas apenas como saída
-            </div>
+            <div className="text-xs text-zinc-500">Client-only • pipeline imutável • canvas apenas como saída</div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -228,31 +383,33 @@ export default function XRayApp() {
         </div>
       </header>
 
-      {/* scroll interno (mobile) */}
+      {/* scroll interno */}
       <section className="flex-1 overflow-y-auto p-4">
-        <div className="mb-3 flex gap-2 md:hidden">
+        {/* Tabs sempre (para não coexistirem visualmente) */}
+        <div className="mb-3 flex gap-2">
           <button
             type="button"
-            onClick={() => setMobileTab("preview")}
+            onClick={() => setTab("preview")}
             className={`flex-1 rounded-md border px-3 py-2 text-xs ${
-              mobileTab === "preview" ? "border-zinc-500 bg-zinc-800" : "border-zinc-800 bg-zinc-900"
+              tab === "preview" ? "border-zinc-500 bg-zinc-800" : "border-zinc-800 bg-zinc-900"
             }`}
           >
             Preview
           </button>
           <button
             type="button"
-            onClick={() => setMobileTab("resultado")}
+            onClick={() => setTab("resultado")}
             className={`flex-1 rounded-md border px-3 py-2 text-xs ${
-              mobileTab === "resultado" ? "border-zinc-500 bg-zinc-800" : "border-zinc-800 bg-zinc-900"
+              tab === "resultado" ? "border-zinc-500 bg-zinc-800" : "border-zinc-800 bg-zinc-900"
             }`}
           >
             Resultado
           </button>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div className={`${mobileTab !== "preview" ? "hidden md:flex" : "flex"} flex-col gap-2`}>
+        {/* Preview */}
+        {tab === "preview" && (
+          <div className="flex flex-col gap-2">
             <div className="text-xs text-zinc-400">Upload / Preview</div>
             <div
               className="relative w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900"
@@ -274,14 +431,24 @@ export default function XRayApp() {
               )}
             </div>
           </div>
+        )}
 
-          <div className={`${mobileTab !== "resultado" ? "hidden md:flex" : "flex"} flex-col gap-2`}>
-            <div className="text-xs text-zinc-400">Resultado (X-ray)</div>
+        {/* Resultado */}
+        {tab === "resultado" && (
+          <div className="flex flex-col gap-2">
+            <div className="text-xs text-zinc-400">
+              Resultado (X-ray) {brushEnabled ? "• Pincel ativo" : ""}
+            </div>
+
             <div
-              className="relative w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900"
+              className="relative w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 touch-none"
               style={viewAspectStyle}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerUp}
+              onPointerLeave={onPointerUp}
             >
-              {/* iOS: força esticar canvas */}
               <canvas
                 ref={canvasRef}
                 className="absolute inset-0 block"
@@ -290,20 +457,18 @@ export default function XRayApp() {
 
               {!img && (
                 <div className="absolute inset-0 grid place-items-center p-6 text-center">
-                  <div className="max-w-xs text-sm text-zinc-400">
-                    Aguardando upload para renderizar o resultado.
-                  </div>
+                  <div className="max-w-xs text-sm text-zinc-400">Aguardando upload para renderizar o resultado.</div>
                 </div>
               )}
             </div>
           </div>
-        </div>
+        )}
 
+        {/* CONTROLES */}
         <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950 p-4">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <div className="md:col-span-2">
               <label className="block text-xs text-zinc-400">Preset de tecido</label>
-
               <select
                 className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm"
                 value={presetKey}
@@ -315,14 +480,13 @@ export default function XRayApp() {
                   </option>
                 ))}
               </select>
-
               <div className="mt-2 text-[11px] text-zinc-500">
-                Presets limitam intensidade/densidade para evitar imagem estourada.
+                Regra prática: aumente Sombras até aparecer detalhe; depois ajuste Pretos; segure Realces.
               </div>
             </div>
 
             <div>
-              <label className="block text-xs text-zinc-400">Espessura: {thickness.toFixed(2)}</label>
+              <label className="block text-xs text-zinc-400">Espessura (↔ efeito): {thickness.toFixed(2)}</label>
               <input
                 className="mt-2 w-full"
                 type="range"
@@ -336,7 +500,7 @@ export default function XRayApp() {
             </div>
 
             <div>
-              <label className="block text-xs text-zinc-400">Intensidade: {intensity.toFixed(2)}</label>
+              <label className="block text-xs text-zinc-400">Força X-ray: {intensity.toFixed(2)}</label>
               <input
                 className="mt-2 w-full"
                 type="range"
@@ -358,8 +522,104 @@ export default function XRayApp() {
               </label>
             </div>
           </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+              <div className="text-xs text-zinc-400 mb-2">Curvas + Sombras + Pretos + Realces</div>
+
+              <label className="block text-xs text-zinc-400">Sombras: {shadows.toFixed(2)}</label>
+              <input className="w-full" type="range" min={0} max={1} step={0.01} value={shadows} onChange={(e) => setShadows(parseFloat(e.target.value))} disabled={!img} />
+
+              <label className="mt-2 block text-xs text-zinc-400">Pretos: {blacks.toFixed(2)}</label>
+              <input className="w-full" type="range" min={0} max={1} step={0.01} value={blacks} onChange={(e) => setBlacks(parseFloat(e.target.value))} disabled={!img} />
+
+              <label className="mt-2 block text-xs text-zinc-400">Realces: {highlights.toFixed(2)}</label>
+              <input className="w-full" type="range" min={0} max={1} step={0.01} value={highlights} onChange={(e) => setHighlights(parseFloat(e.target.value))} disabled={!img} />
+
+              <label className="mt-2 block text-xs text-zinc-400">Curvas (contraste S): {contrast.toFixed(2)}</label>
+              <input className="w-full" type="range" min={0} max={1} step={0.01} value={contrast} onChange={(e) => setContrast(parseFloat(e.target.value))} disabled={!img} />
+            </div>
+
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+              <div className="text-xs text-zinc-400 mb-2">Textura / Denoise / Nitidez</div>
+
+              <label className="block text-xs text-zinc-400">Clarity (microcontraste): {clarity.toFixed(2)}</label>
+              <input className="w-full" type="range" min={0} max={1} step={0.01} value={clarity} onChange={(e) => setClarity(parseFloat(e.target.value))} disabled={!img} />
+
+              <label className="mt-2 block text-xs text-zinc-400">Dehaze (cuidado): {dehaze.toFixed(2)}</label>
+              <input className="w-full" type="range" min={0} max={1} step={0.01} value={dehaze} onChange={(e) => setDehaze(parseFloat(e.target.value))} disabled={!img} />
+
+              <label className="mt-2 block text-xs text-zinc-400">Denoise cor: {denoiseColor.toFixed(2)}</label>
+              <input className="w-full" type="range" min={0} max={1} step={0.01} value={denoiseColor} onChange={(e) => setDenoiseColor(parseFloat(e.target.value))} disabled={!img} />
+
+              <label className="mt-2 block text-xs text-zinc-400">Denoise luminância: {denoiseLuma.toFixed(2)}</label>
+              <input className="w-full" type="range" min={0} max={1} step={0.01} value={denoiseLuma} onChange={(e) => setDenoiseLuma(parseFloat(e.target.value))} disabled={!img} />
+
+              <label className="mt-2 block text-xs text-zinc-400">Nitidez: {sharpen.toFixed(2)}</label>
+              <input className="w-full" type="range" min={0} max={1} step={0.01} value={sharpen} onChange={(e) => setSharpen(parseFloat(e.target.value))} disabled={!img} />
+
+              <label className="mt-2 block text-xs text-zinc-400">Masking (bordas): {sharpenMasking.toFixed(2)}</label>
+              <input className="w-full" type="range" min={0} max={1} step={0.01} value={sharpenMasking} onChange={(e) => setSharpenMasking(parseFloat(e.target.value))} disabled={!img} />
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+            <div className="text-xs text-zinc-400 mb-2">Ajustes locais (Dodge & Burn)</div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className={`rounded-md border px-3 py-2 text-xs ${
+                  brushEnabled ? "border-zinc-500 bg-zinc-800" : "border-zinc-800 bg-zinc-900"
+                }`}
+                onClick={() => setBrushEnabled((v) => !v)}
+                disabled={!img || tab !== "resultado"}
+              >
+                {brushEnabled ? "Pincel: ON" : "Pincel: OFF"}
+              </button>
+
+              <select
+                className="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs"
+                value={brushMode}
+                onChange={(e) => setBrushMode(e.target.value as BrushMode)}
+                disabled={!img || !brushEnabled}
+              >
+                <option value="dodge">Dodge (clarear)</option>
+                <option value="burn">Burn (escurecer)</option>
+              </select>
+
+              <button
+                type="button"
+                className="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs"
+                onClick={() => {
+                  clearMasks();
+                  requestAnimationFrame(() => render());
+                }}
+                disabled={!img}
+              >
+                Limpar máscara
+              </button>
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+              <div>
+                <label className="block text-xs text-zinc-400">Tamanho: {brushSize}px</label>
+                <input className="w-full" type="range" min={8} max={140} step={1} value={brushSize} onChange={(e) => setBrushSize(parseInt(e.target.value, 10))} disabled={!img || !brushEnabled} />
+              </div>
+              <div>
+                <label className="block text-xs text-zinc-400">Opacidade: {brushOpacity.toFixed(2)}</label>
+                <input className="w-full" type="range" min={0.05} max={0.2} step={0.01} value={brushOpacity} onChange={(e) => setBrushOpacity(parseFloat(e.target.value))} disabled={!img || !brushEnabled} />
+              </div>
+              <div className="text-[11px] text-zinc-500">
+                Use baixa opacidade (5–15%) e várias passadas. Isso dá volume sem estourar.
+              </div>
+            </div>
+          </div>
         </div>
       </section>
     </div>
   );
 }
+
+
+
