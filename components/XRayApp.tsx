@@ -307,7 +307,11 @@ export default function XRayApp() {
                 onChange={(e) => setPresetKey(e.target.value as FabricPresetKey)}
               >
                 {Object.values(PRESETS).map((p) => (
-                  <option key={p.key} value={p.key}>
+                  <canvas
+                    ref={canvasRef}
+                    className="absolute inset-0 block"
+                    style={{ width: "100%", height: "100%" }}
+                  />
                     {p.label}
                   </option>
                 ))}

@@ -2,14 +2,10 @@ import type { FabricPreset } from "./presets";
 
 export type XRayParams = {
   preset: FabricPreset;
-
-  // Controles do usuário (sempre limitados pelo preset)
-  thickness: number; // dentro do range do preset
-  intensity: number; // 0..1 (escala adicional dentro do maxReveal)
+  thickness: number;
+  intensity: number;
   enableNoise: boolean;
-
-  // Segurança de performance / estabilidade
-  maxRenderSize: number; // ex: 1600..2200
+  maxRenderSize: number;
 };
 
 function clamp(v: number, a: number, b: number) {
@@ -20,7 +16,6 @@ function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
 }
 
-// Box blur separável (rápido e estável) – evita filtros extremos
 function boxBlurRGBA(src: Uint8ClampedArray, w: number, h: number, radius: number) {
   const r = Math.max(0, Math.floor(radius));
   if (r === 0) return src.slice();
@@ -31,11 +26,7 @@ function boxBlurRGBA(src: Uint8ClampedArray, w: number, h: number, radius: numbe
   // Horizontal
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      let rs = 0,
-        gs = 0,
-        bs = 0,
-        as = 0,
-        count = 0;
+      let rs = 0, gs = 0, bs = 0, as = 0, count = 0;
       const x0 = Math.max(0, x - r);
       const x1 = Math.min(w - 1, x + r);
       for (let xi = x0; xi <= x1; xi++) {
@@ -57,11 +48,7 @@ function boxBlurRGBA(src: Uint8ClampedArray, w: number, h: number, radius: numbe
   // Vertical
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      let rs = 0,
-        gs = 0,
-        bs = 0,
-        as = 0,
-        count = 0;
+      let rs = 0, gs = 0, bs = 0, as = 0, count = 0;
       const y0 = Math.max(0, y - r);
       const y1 = Math.min(h - 1, y + r);
       for (let yi = y0; yi <= y1; yi++) {
@@ -83,13 +70,6 @@ function boxBlurRGBA(src: Uint8ClampedArray, w: number, h: number, radius: numbe
   return out;
 }
 
-/**
- * Efeito “X-ray” realista simplificado:
- * - Atenuação progressiva (transmissão ~ exp(-density*thickness))
- * - Realce sutil de volumes (alto-frequência controlado, sem “lavar”)
- * - Desaturação moderada + ruído leve (sensor)
- * - Clamps fortes por preset (anti-estouro)
- */
 export function applyXRayEffect(imageData: ImageData, params: XRayParams): ImageData {
   const { preset, thickness, intensity, enableNoise } = params;
   const w = imageData.width;
@@ -98,16 +78,22 @@ export function applyXRayEffect(imageData: ImageData, params: XRayParams): Image
   const src = imageData.data;
   const out = new Uint8ClampedArray(src.length);
 
-  // Transmissão física simplificada (quanto maior, mais “revela”)
+  // transmissão física simplificada (quanto maior, mais “revela”)
   const t = Math.exp(
     -preset.density * clamp(thickness, preset.thicknessMin, preset.thicknessMax)
   );
+
+  // Revelação limitada por preset (anti-estouro)
   const reveal = clamp(t * preset.maxReveal * clamp(intensity, 0, 1), 0, preset.maxReveal);
 
-  // Blur representa espalhamento/scattering do tecido (não é “contraste extremo”)
+  // Espalhamento do tecido
   const blurred = boxBlurRGBA(src, w, h, preset.blurRadius);
 
-  // Ruído bem leve, proporcional à revelação (sensor)
+  // Mistura controlada com o “espalhamento” (isso garante diferença perceptível)
+  // Mantém clamp forte para não “lavar” a imagem
+  const mix = clamp(reveal * 1.1, 0, 0.38);
+
+  // Ruído leve proporcional à revelação
   const noiseAmp = enableNoise ? preset.noise * reveal : 0;
 
   for (let i = 0; i < src.length; i += 4) {
@@ -120,20 +106,18 @@ export function applyXRayEffect(imageData: ImageData, params: XRayParams): Image
     const bg = blurred[i + 1];
     const bb = blurred[i + 2];
 
-    // High-pass: detalhe = original - borrado (sutil)
+    // High-pass (detalhe sutil)
     const dr = (r - br) * preset.detailGain * reveal;
     const dg = (g - bg) * preset.detailGain * reveal;
     const db = (b - bb) * preset.detailGain * reveal;
 
-    // Clamp de delta (segurança contra “lavar” / estourar)
+    // Clamp de delta (anti “contraste extremo”)
     const maxD = preset.maxDelta * reveal;
     const cdr = clamp(dr, -maxD, maxD);
     const cdg = clamp(dg, -maxD, maxD);
     const cdb = clamp(db, -maxD, maxD);
 
-
-    // Aplicação do detalhe usando mistura (mix) para evitar "lavagem"
-    const mix = clamp(reveal * 0.9, 0, 0.35); // limite forte anti-“lavagem”
+    // Transmissão (mistura com espalhamento) + detalhe
     let rr = lerp(r, br, mix) + cdr;
     let gg = lerp(g, bg, mix) + cdg;
     let bb2 = lerp(b, bb, mix) + cdb;
